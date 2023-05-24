@@ -19,7 +19,8 @@ MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
 
 PWMAudio pwm(0); // GP0 = left, GP1 = right
 
-const int freq = 48000; // Output frequency for PWM
+//const int freq = 48000; // Output frequency for PWM
+const int freq = 32470; //12bit - 133mhz / 4096
 const int base_freq = 0xffffffff / freq;
 
 static filter1pole filter;

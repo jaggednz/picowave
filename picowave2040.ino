@@ -19,6 +19,8 @@ MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
 
 PWMAudio pwm_channel1(0, true); // GP0 = left, GP1 = right
 PWMAudio pwm_channel2(2, true); // GP0 = left, GP1 = right
+PWMAudio pwm_channel3(4, true); // GP0 = left, GP1 = right
+PWMAudio pwm_channel4(6, true); // GP0 = left, GP1 = right
 
 //const int freq = 48000; // Output frequency for PWM
 const int freq = 32470; //12bit - 133mhz / 4096
@@ -55,11 +57,12 @@ typedef struct {
   int16_t output;
 } voice_state;
 
+const uint8_t VOICE_COUNT = 8;
 voice_state voices[8];
 
 uint8_t voice_alloc_head = 0;
 uint8_t voice_alloc_tail = 1;
-uint8_t voice_allocation[8] = { 0, 1, 2, 3 };
+uint8_t voice_allocation[8] = { 0, 1, 2, 3, 4, 5, 6, 7};
 
 uint8_t  address_pointer = 0x00;
 
@@ -119,6 +122,56 @@ void channel2_cb() {
   }
 }
 
+void channel3_cb() {
+  while (pwm_channel3.availableForWrite()) {
+    voice_state *voiceA = &voices[4];
+    voiceA->phase_accum += voiceA->phase_step;
+    // 32 accumulator bits - 7 wavetable bits
+    uint8_t phaseA = voiceA->phase_accum >> (32-N);
+    voiceA->output = ((wavetableA[phaseA]) * lfo);
+    voiceA->output += ((wavetableB[phaseA]) * (127-lfo));
+    //output = filter1pole_feed(&filter, (eg>>4), output);
+    voiceA->output = (voiceA->output>>8) * (voiceA->amp);
+
+    voice_state *voiceB = &voices[5];
+    voiceB->phase_accum += voiceB->phase_step;
+    // 32 accumulator bits - 7 wavetable bits
+    uint8_t phaseB = voiceB->phase_accum >> (32-N);
+    voiceB->output = ((wavetableA[phaseB]) * lfo);
+    voiceB->output += ((wavetableB[phaseB]) * (127-lfo));
+    //output = filter1pole_feed(&filter, (eg>>4), output);
+    voiceB->output = (voiceB->output>>8) * (voiceB->amp);
+
+    pwm_channel3.write(voiceA->output);
+    pwm_channel3.write(voiceB->output);
+  }
+}
+
+void channel4_cb() {
+  while (pwm_channel4.availableForWrite()) {
+    voice_state *voiceA = &voices[6];
+    voiceA->phase_accum += voiceA->phase_step;
+    // 32 accumulator bits - 7 wavetable bits
+    uint8_t phaseA = voiceA->phase_accum >> (32-N);
+    voiceA->output = ((wavetableA[phaseA]) * lfo);
+    voiceA->output += ((wavetableB[phaseA]) * (127-lfo));
+    //output = filter1pole_feed(&filter, (eg>>4), output);
+    voiceA->output = (voiceA->output>>8) * (voiceA->amp);
+
+    voice_state *voiceB = &voices[7];
+    voiceB->phase_accum += voiceB->phase_step;
+    // 32 accumulator bits - 7 wavetable bits
+    uint8_t phaseB = voiceB->phase_accum >> (32-N);
+    voiceB->output = ((wavetableA[phaseB]) * lfo);
+    voiceB->output += ((wavetableB[phaseB]) * (127-lfo));
+    //output = filter1pole_feed(&filter, (eg>>4), output);
+    voiceB->output = (voiceB->output>>8) * (voiceB->amp);
+
+    pwm_channel4.write(voiceA->output);
+    pwm_channel4.write(voiceB->output);
+  }
+}
+
 void load_wavetable(uint8_t table[], uint8_t index, bool print = false) {
   int offset = ppg_wavetable_offsets[index];
   for (int i = 0; i < 64; i++) {
@@ -136,6 +189,7 @@ void load_wavetable(uint8_t table[], uint8_t index, bool print = false) {
   }
 }
 
+uint8_t assign_voice = 0;
 void handleNoteOn(byte channel, byte pitch, byte velocity)
 {
   // Log when a note is pressed.
@@ -147,17 +201,28 @@ void handleNoteOn(byte channel, byte pitch, byte velocity)
 
   Serial.print(" velocity = ");
   Serial.println(velocity);
+  
+  bool assigned = false;
+  for (int i = 0; i < 8 && !assigned; i++) {
+    voice_state *voice = &voices[voice_alloc_head];
+    if (!voice->gate) {
+      assign_voice = voice_alloc_head;
+      assigned = true;
+    }
+    voice_alloc_head++;
+    voice_alloc_head %= VOICE_COUNT;
+  }
 
- 
-  voice_state *voice = &voices[voice_allocation[voice_alloc_head]];
-  voice_alloc_head++;
-  voice_alloc_head %= 4;
+  voice_state *voice = &voices[assign_voice];
+  
+  Serial.print(" voice alloc = ");
+  Serial.println(assign_voice);
 
   voice->note = pitch;
   voice->freq = midiNoteFreq[pitch];
   voice->gate = true;
   voice->amp = (uint8_t)velocity<<4;
-  set_phase_step(voice,voice->freq);
+  voice->phase_step = voice->freq * base_freq;
 }
 
 void handleNoteOff(byte channel, byte pitch, byte velocity)
@@ -171,6 +236,12 @@ void handleNoteOff(byte channel, byte pitch, byte velocity)
 
   Serial.print(" velocity = ");
   Serial.println(velocity);
+  for (int i = 0; i < 8; i++) {
+    voice_state *voice = &voices[i];
+    if (voice->note == pitch) {
+      voice->gate = false;
+    }
+  }
 }
 
 void handleCC(byte channel, byte control, byte value)
@@ -221,12 +292,16 @@ void setup() {
   pwm_channel2.onTransmit(channel2_cb);
   pwm_channel2.begin(freq);
 
+  pwm_channel3.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel3.onTransmit(channel3_cb);
+  pwm_channel3.begin(freq);
+
+  pwm_channel4.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel4.onTransmit(channel4_cb);
+  pwm_channel4.begin(freq);
+
   // wait until device mounted
   while( !TinyUSBDevice.mounted() ) delay(1);
-}
-
-void set_phase_step(voice_state *voice, int freqout) {
-  voice->phase_step = freqout * base_freq;
 }
 
 void loop() {
@@ -234,10 +309,10 @@ void loop() {
   //Serial.println("working...");
   MIDI.read(); 
 
-  delay(5);
+  delay(6);
   for (int i = 0; i < 8; i++) {
     voice_state *voice = &voices[i];
-    if (voice->amp > 0) {
+    if (!voice->gate && voice->amp > 0) {
       voice->amp--;
     }
   }

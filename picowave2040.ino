@@ -8,6 +8,8 @@
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
 
+#include <pico/rand.h>
+
 int midiNoteFreq[] = {8, 9, 9, 10, 10, 11, 12, 12, 13, 14, 15, 15, 16, 17, 18, 19, 21, 22, 23, 24, 26, 28, 29, 31, 33, 35, 37, 39, 41, 44, 46, 49, 52, 55, 58, 62, 65, 69, 73, 78, 82, 87, 92, 98, 104, 110, 117, 123, 131, 139, 147, 156, 165, 175, 185, 196, 208, 220, 233, 247, 262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494, 523, 554, 587, 622, 659, 698, 740, 784, 831, 880, 932, 988, 1047, 1109, 1175, 1245, 1319, 1397, 1480, 1568, 1661, 1760, 1865, 1976, 2093, 2217, 2349, 2489, 2637, 2794, 2960, 3136, 3322, 3520, 3729, 3951, 4186, 4435, 4699, 4978, 5274, 5588, 5920, 6272, 6645, 7040, 7459, 7902, 8372, 8870, 9397, 9956, 10548, 11175, 11840, 12544};
 
 // USB MIDI object
@@ -54,6 +56,8 @@ typedef struct {
   int freq;
   uint32_t phase_step = 0;
   uint32_t phase_accum = 0x00000000;
+  uint32_t sub_phase_step = 0;
+  uint32_t sub_phase_accum = 0x00000000;
   int16_t output;
 } voice_state;
 
@@ -70,106 +74,55 @@ uint8_t sineTable[128]; // Precompute sine wave in 128 steps
 uint8_t wavetableA[128]; // Precompute sine wave in 128 steps
 uint8_t wavetableB[128]; // Precompute sine wave in 128 steps
 
+void inline update_voice(voice_state *voice) {
+  uint8_t phase;
+  uint8_t subPhase;
+
+  voice->phase_accum += voice->phase_step;
+  //voice->sub_phase_accum += voice->sub_phase_step;
+  // 32 accumulator bits - 7 wavetable bits
+  phase = voice->phase_accum >> (32-N);
+  //subPhase = voice->sub_phase_accum >> (32-1); //1Bit SUB
+  voice->output = ((wavetableA[phase]) * lfo);
+  voice->output += ((wavetableB[phase]) * (127-lfo));
+  //voice->output += subPhase * 127;
+  //output = filter1pole_feed(&filter, (eg>>4), output);
+  voice->output = (voice->output>>8) * (voice->amp);
+}
+
+void inline update_channel(PWMAudio &pwm_channel, voice_state *voiceA, voice_state *voiceB) {
+  uint8_t phaseA, phaseB;
+  uint8_t subPhaseA, subPhaseB;
+  while (pwm_channel.availableForWrite()) {
+    //Sinewave LFO
+    lfo = sineTable[((modulation>>8)&127)];
+
+    update_voice(voiceA);
+    update_voice(voiceB);
+
+    //voiceA->output -= rosc_hw->randombit;
+    //voiceB->output -= rosc_hw->randombit;
+
+    pwm_channel.write(voiceA->output);
+    pwm_channel.write(voiceB->output);
+  }
+}
+
 void channel1_cb() {
   modulation += modulation_step;
-  while (pwm_channel1.availableForWrite()) {
-    lfo = sineTable[((modulation>>8)&127)];
-    voice_state *voiceA = &voices[0];
-    voiceA->phase_accum += voiceA->phase_step;
-    // 32 accumulator bits - 7 wavetable bits
-    uint8_t phaseA = voiceA->phase_accum >> (32-N);
-    voiceA->output = ((wavetableA[phaseA]) * lfo);
-    voiceA->output += ((wavetableB[phaseA]) * (127-lfo));
-    //output = filter1pole_feed(&filter, (eg>>4), output);
-    voiceA->output = (voiceA->output>>8) * (voiceA->amp);
-
-    voice_state *voiceB = &voices[1];
-    voiceB->phase_accum += voiceB->phase_step;
-    // 32 accumulator bits - 7 wavetable bits
-    uint8_t phaseB = voiceB->phase_accum >> (32-N);
-    voiceB->output = ((wavetableA[phaseB]) * lfo);
-    voiceB->output += ((wavetableB[phaseB]) * (127-lfo));
-    //output = filter1pole_feed(&filter, (eg>>4), output);
-    voiceB->output = (voiceB->output>>8) * (voiceB->amp);
-
-    pwm_channel1.write(voiceA->output);
-    pwm_channel1.write(voiceB->output);
-  }
+  update_channel(pwm_channel1, &voices[0], &voices[1]);
 }
 
 void channel2_cb() {
-  while (pwm_channel2.availableForWrite()) {
-    voice_state *voiceA = &voices[2];
-    voiceA->phase_accum += voiceA->phase_step;
-    // 32 accumulator bits - 7 wavetable bits
-    uint8_t phaseA = voiceA->phase_accum >> (32-N);
-    voiceA->output = ((wavetableA[phaseA]) * lfo);
-    voiceA->output += ((wavetableB[phaseA]) * (127-lfo));
-    //output = filter1pole_feed(&filter, (eg>>4), output);
-    voiceA->output = (voiceA->output>>8) * (voiceA->amp);
-
-    voice_state *voiceB = &voices[3];
-    voiceB->phase_accum += voiceB->phase_step;
-    // 32 accumulator bits - 7 wavetable bits
-    uint8_t phaseB = voiceB->phase_accum >> (32-N);
-    voiceB->output = ((wavetableA[phaseB]) * lfo);
-    voiceB->output += ((wavetableB[phaseB]) * (127-lfo));
-    //output = filter1pole_feed(&filter, (eg>>4), output);
-    voiceB->output = (voiceB->output>>8) * (voiceB->amp);
-
-    pwm_channel2.write(voiceA->output);
-    pwm_channel2.write(voiceB->output);
-  }
+  update_channel(pwm_channel2, &voices[2], &voices[3]);
 }
 
 void channel3_cb() {
-  while (pwm_channel3.availableForWrite()) {
-    voice_state *voiceA = &voices[4];
-    voiceA->phase_accum += voiceA->phase_step;
-    // 32 accumulator bits - 7 wavetable bits
-    uint8_t phaseA = voiceA->phase_accum >> (32-N);
-    voiceA->output = ((wavetableA[phaseA]) * lfo);
-    voiceA->output += ((wavetableB[phaseA]) * (127-lfo));
-    //output = filter1pole_feed(&filter, (eg>>4), output);
-    voiceA->output = (voiceA->output>>8) * (voiceA->amp);
-
-    voice_state *voiceB = &voices[5];
-    voiceB->phase_accum += voiceB->phase_step;
-    // 32 accumulator bits - 7 wavetable bits
-    uint8_t phaseB = voiceB->phase_accum >> (32-N);
-    voiceB->output = ((wavetableA[phaseB]) * lfo);
-    voiceB->output += ((wavetableB[phaseB]) * (127-lfo));
-    //output = filter1pole_feed(&filter, (eg>>4), output);
-    voiceB->output = (voiceB->output>>8) * (voiceB->amp);
-
-    pwm_channel3.write(voiceA->output);
-    pwm_channel3.write(voiceB->output);
-  }
+  update_channel(pwm_channel3, &voices[4], &voices[5]);
 }
 
 void channel4_cb() {
-  while (pwm_channel4.availableForWrite()) {
-    voice_state *voiceA = &voices[6];
-    voiceA->phase_accum += voiceA->phase_step;
-    // 32 accumulator bits - 7 wavetable bits
-    uint8_t phaseA = voiceA->phase_accum >> (32-N);
-    voiceA->output = ((wavetableA[phaseA]) * lfo);
-    voiceA->output += ((wavetableB[phaseA]) * (127-lfo));
-    //output = filter1pole_feed(&filter, (eg>>4), output);
-    voiceA->output = (voiceA->output>>8) * (voiceA->amp);
-
-    voice_state *voiceB = &voices[7];
-    voiceB->phase_accum += voiceB->phase_step;
-    // 32 accumulator bits - 7 wavetable bits
-    uint8_t phaseB = voiceB->phase_accum >> (32-N);
-    voiceB->output = ((wavetableA[phaseB]) * lfo);
-    voiceB->output += ((wavetableB[phaseB]) * (127-lfo));
-    //output = filter1pole_feed(&filter, (eg>>4), output);
-    voiceB->output = (voiceB->output>>8) * (voiceB->amp);
-
-    pwm_channel4.write(voiceA->output);
-    pwm_channel4.write(voiceB->output);
-  }
+  update_channel(pwm_channel4, &voices[6], &voices[7]);
 }
 
 void load_wavetable(uint8_t table[], uint8_t index, bool print = false) {
@@ -223,6 +176,7 @@ void handleNoteOn(byte channel, byte pitch, byte velocity)
   voice->gate = true;
   voice->amp = (uint8_t)velocity<<4;
   voice->phase_step = voice->freq * base_freq;
+  voice->sub_phase_step = voice->phase_step/2;
 }
 
 void handleNoteOff(byte channel, byte pitch, byte velocity)

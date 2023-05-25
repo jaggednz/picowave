@@ -17,11 +17,12 @@ Adafruit_USBD_MIDI usb_midi;
 // and attach usb_midi as the transport.
 MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
 
-PWMAudio pwm(0); // GP0 = left, GP1 = right
+PWMAudio pwm(0, true); // GP0 = left, GP1 = right
 
 //const int freq = 48000; // Output frequency for PWM
 const int freq = 32470; //12bit - 133mhz / 4096
 const int base_freq = 0xffffffff / freq;
+const uint8_t N = 7; //Number of bits in wavetable
 
 static filter1pole filter;
 static int8_t filter_cutoff = 63;
@@ -35,28 +36,23 @@ uint8_t wtb_sel = 28;
 const int notes[] = { 784/2, 440, 784/4, 220, 784/8, 110, 784/16, 55};
 const int dly[] =   { 400, 600, 600, 400, 400, 400, 400, 400};
 
-
-//const int notes[] = { 784, 880, 698, 349, 523 };
-//const int dly[] =   { 200, 250, 350, 250, 500 };
-//const int dly[] =   { 400, 500, 700, 500, 1000 };
 const int noteCnt = sizeof(notes) / sizeof(notes[0]);
-
-int freqL = 1;
-int freqR = 1;
 
 uint32_t phase_step = 0;
 uint32_t phase_accum = 0x00000000;
 
-typedef struct osc
-{
-	uint16_t phase;
-	uint16_t phase_step;
-  uint8_t env;
-	uint16_t output;
-	uint8_t wave;
+typedef struct {
+  uint8_t waveA;
+  uint8_t waveB;
+  bool gate = false;
+  uint8_t note;
+  int freq;
+  uint32_t phase_step = 0;
+  uint32_t phase_accum = 0x00000000;
+  int16_t output;
 } osc;
 
-static osc voices[2];
+osc voices[8];
 
 uint8_t  address_pointer = 0x00;
 
@@ -71,15 +67,27 @@ int16_t output = 0;
 void cb() {
   al += modulation;
   while (pwm.availableForWrite()) {
-     lfo = sineTable[((al>>8)&127)];
-    phase_accum += phase_step;
+    lfo = sineTable[((al>>8)&127)];
+    osc *voiceA = &voices[0];
+    voiceA->phase_accum += voiceA->phase_step;
     // 32 accumulator bits - 7 wavetable bits
-    uint8_t phase = phase_accum >> (32-7);
-    output = ((wavetableA[phase]) * lfo);
-    output += ((wavetableB[phase]) * (127-lfo));
+    uint8_t phaseA = voiceA->phase_accum >> (32-N);
+    voiceA->output = ((wavetableA[phaseA]) * lfo);
+    voiceA->output += ((wavetableB[phaseA]) * (127-lfo));
     //output = filter1pole_feed(&filter, (eg>>4), output);
-    output = (output>>8) * (eg);
-    pwm.write(output);
+    voiceA->output = (voiceA->output>>8) * (eg);
+
+    osc *voiceB = &voices[1];
+    voiceB->phase_accum += voiceB->phase_step;
+    // 32 accumulator bits - 7 wavetable bits
+    uint8_t phaseB = voiceB->phase_accum >> (32-N);
+    voiceB->output = ((wavetableA[phaseB]) * lfo);
+    voiceB->output += ((wavetableB[phaseB]) * (127-lfo));
+    //output = filter1pole_feed(&filter, (eg>>4), output);
+    voiceB->output = (voiceB->output>>8) * (eg);
+
+    pwm.write(voiceA->output);
+    pwm.write(voiceB->output);
     cnt++;
   }
 }
@@ -113,8 +121,10 @@ void handleNoteOn(byte channel, byte pitch, byte velocity)
   Serial.print(" velocity = ");
   Serial.println(velocity);
 
-  freqL = midiNoteFreq[pitch];
-  set_phase_step(freqL);
+  osc *voice = &voices[0];
+  voice->note = pitch;
+  voice->freq = midiNoteFreq[pitch];
+  set_phase_step(voice,voice->freq);
   eg = (int)velocity<<4;
 }
 
@@ -174,15 +184,12 @@ void setup() {
   pwm.onTransmit(cb);
   pwm.begin(freq);
 
-  freqL = (notes[0]);
-  set_phase_step(freqL);
-
   // wait until device mounted
   while( !TinyUSBDevice.mounted() ) delay(1);
 }
 
-void set_phase_step(int freqout) {
-  phase_step = freqout * base_freq;
+void set_phase_step(osc *voice, int freqout) {
+  voice->phase_step = freqout * base_freq;
 }
 
 void loop() {
@@ -194,23 +201,5 @@ void loop() {
   if (eg>0) {
     eg -= 2;
   }
-  // Send it out on the LHS
-  // al = 0;
-  // for (int i = 0; i < noteCnt; i++) {
-  //   al = 0;
-  //   freqL = (notes[i]);
-  //   delay(dly[i]);
-  // }
-  // delay(500);
-  // wta_sel++;
-  // if (wta_sel > 28) {
-  //   wta_sel = 0;
-  //   wtb_sel--;
-  //   if (wtb_sel < 0) {
-  //     wtb_sel = 0;
-  //   }
-  //   load_wavetable(wavetableB, wtb_sel);
-  // }
-  // load_wavetable(wavetableA, wta_sel);
 }
 

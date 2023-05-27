@@ -44,13 +44,38 @@ const int dly[] =   { 400, 600, 600, 400, 400, 400, 400, 400};
 
 const int noteCnt = sizeof(notes) / sizeof(notes[0]);
 
-uint32_t phase_step = 0;
-uint32_t phase_accum = 0x00000000;
+#define ADSR_COUNT 3
+
+#define ADSR_IDLE 0
+#define ADSR_ATTACK 1
+#define ADSR_DECAY 2
+#define ADSR_SUSTAIN 3
+#define ADSR_RELEASE 4
 
 typedef struct {
+  uint8_t attack = 50;
+  uint8_t decay = 50;
+  uint16_t sustain = 200;
+  uint8_t release = 50;
+  bool linear = true;
+} adsr_eg;
+
+typedef struct {
+  adsr_eg adsr[ADSR_COUNT];
+} patch;
+
+patch current_patch;
+
+typedef struct {
+  uint8_t id;
+
   uint8_t waveA;
   uint8_t waveB;
   bool gate = false;
+
+  uint8_t  adsr_state[ADSR_COUNT] = {0,0,0};
+  uint16_t adsr_value[ADSR_COUNT] = {0,0,0};
+
   uint8_t amp;
   uint8_t note;
   int freq;
@@ -74,6 +99,59 @@ uint8_t sineTable[128]; // Precompute sine wave in 128 steps
 uint8_t wavetableA[128]; // Precompute sine wave in 128 steps
 uint8_t wavetableB[128]; // Precompute sine wave in 128 steps
 
+void update_adsr(voice_state *voice, uint32_t cnt) {
+  patch *curr = &current_patch;
+  for (int i = 0; i < ADSR_COUNT; i++) {
+    adsr_eg *adsr = &curr->adsr[i];
+    switch(voice->adsr_state[i]) {
+      case ADSR_ATTACK:
+        voice->adsr_value[i] += adsr->attack;
+        if (voice->adsr_value[i] >= 2047) {
+          voice->adsr_value[i] = 2047;
+          voice->adsr_state[i] = ADSR_DECAY;
+        }
+        if (!voice->gate) {
+          voice->adsr_state[i] = ADSR_RELEASE;
+        }
+        break;
+      case ADSR_DECAY:
+        if (voice->adsr_value[i] > adsr->sustain && voice->adsr_value[i] >= adsr->decay) {
+          voice->adsr_value[i] -= adsr->decay;
+        } else {
+          voice->adsr_value[i] = adsr->sustain;
+          voice->adsr_state[i] = ADSR_SUSTAIN;
+        }
+        if (!voice->gate) {
+          voice->adsr_state[i] = ADSR_RELEASE;
+        }
+        break;
+      case ADSR_SUSTAIN:
+        if (!voice->gate) {
+          voice->adsr_state[i] = ADSR_RELEASE;
+        }
+        break;
+      case ADSR_RELEASE:
+        if (voice->adsr_value[i] > adsr->release) {
+          voice->adsr_value[i] -= adsr->release;
+        } else {
+          voice->adsr_value[i] = 0;
+          voice->adsr_state[i] = ADSR_IDLE;
+        }
+        break;
+      case ADSR_IDLE:
+      default:
+        if (voice->gate) {
+          voice->adsr_state[i] = ADSR_ATTACK;
+        }
+        break;
+    }
+    if (voice->id == 0 && i == 0 && cnt%64 == 0) {
+      Serial.printf("ADSR %d: %d - %d >> A%d D%d S%d R%d \n",cnt, voice->adsr_state[i],voice->adsr_value[i],adsr->attack,adsr->decay,adsr->sustain,adsr->release);
+    }
+  }
+  
+}
+
 void inline update_voice(voice_state *voice) {
   uint8_t phase;
   uint8_t subPhase;
@@ -87,7 +165,7 @@ void inline update_voice(voice_state *voice) {
   voice->output += ((wavetableB[phase]) * (127-lfo));
   //voice->output += subPhase * 127;
   //output = filter1pole_feed(&filter, (eg>>4), output);
-  voice->output = (voice->output>>8) * (voice->amp);
+  voice->output = (voice->output>>8) * (voice->adsr_value[0]>>3);
 }
 
 void inline update_channel(PWMAudio &pwm_channel, voice_state *voiceA, voice_state *voiceB) {
@@ -135,7 +213,7 @@ void load_wavetable(uint8_t table[], uint8_t index, bool print = false) {
   }
   if (print){
     for (int i = 0; i < 128; i++) {
-      Serial.println(table[i]);
+      //Serial.println(table[i]);
     }
   } else {
     //Serial.printf("loaded wavetable %d\n",index);
@@ -146,14 +224,14 @@ uint8_t assign_voice = 0;
 void handleNoteOn(byte channel, byte pitch, byte velocity)
 {
   // Log when a note is pressed.
-  Serial.print("Note on: channel = ");
-  Serial.print(channel);
+  //Serial.print("Note on: channel = ");
+  //Serial.print(channel);
 
-  Serial.print(" pitch = ");
-  Serial.print(pitch);
+  //Serial.print(" pitch = ");
+  //Serial.print(pitch);
 
-  Serial.print(" velocity = ");
-  Serial.println(velocity);
+  //Serial.print(" velocity = ");
+  //Serial.println(velocity);
   
   bool assigned = false;
   for (int i = 0; i < 8 && !assigned; i++) {
@@ -168,8 +246,8 @@ void handleNoteOn(byte channel, byte pitch, byte velocity)
 
   voice_state *voice = &voices[assign_voice];
   
-  Serial.print(" voice alloc = ");
-  Serial.println(assign_voice);
+  //Serial.print(" voice alloc = ");
+  //Serial.println(assign_voice);
 
   voice->note = pitch;
   voice->freq = midiNoteFreq[pitch];
@@ -182,14 +260,14 @@ void handleNoteOn(byte channel, byte pitch, byte velocity)
 void handleNoteOff(byte channel, byte pitch, byte velocity)
 {
   // Log when a note is released.
-  Serial.print("Note off: channel = ");
-  Serial.print(channel);
+  //Serial.print("Note off: channel = ");
+  //Serial.print(channel);
 
-  Serial.print(" pitch = ");
-  Serial.print(pitch);
+  //Serial.print(" pitch = ");
+  //Serial.print(pitch);
 
-  Serial.print(" velocity = ");
-  Serial.println(velocity);
+  //Serial.print(" velocity = ");
+  //Serial.println(velocity);
   for (int i = 0; i < 8; i++) {
     voice_state *voice = &voices[i];
     if (voice->note == pitch) {
@@ -200,6 +278,8 @@ void handleNoteOff(byte channel, byte pitch, byte velocity)
 
 void handleCC(byte channel, byte control, byte value)
 {
+  patch *patch = &current_patch;
+  if (channel != 1) { return; }
   if (control == 0) {
     load_wavetable(wavetableA, (int)value%28,true);
   }
@@ -208,6 +288,22 @@ void handleCC(byte channel, byte control, byte value)
   }
   if (control == 1) {
     modulation_step = (int) value;
+  }
+  if (control == 42) {
+    adsr_eg *adsr = &patch->adsr[0];
+    adsr->attack = 128 - value;
+  }
+  if (control == 44) {
+    adsr_eg *adsr = &patch->adsr[0];
+    adsr->decay = 128 - value;
+  }
+  if (control == 11) {
+    adsr_eg *adsr = &patch->adsr[0];
+    adsr->sustain = value<<4;
+  }
+  if (control == 5) {
+    adsr_eg *adsr = &patch->adsr[0];
+    adsr->release = 128 - value;
   }
 }
 
@@ -254,21 +350,31 @@ void setup() {
   pwm_channel4.onTransmit(channel4_cb);
   pwm_channel4.begin(freq);
 
+  for (int i = 0; i < 8; i++) {
+      voice_state *voice = &voices[i];
+      voice->id = i;
+  }
+
   // wait until device mounted
   while( !TinyUSBDevice.mounted() ) delay(1);
 }
 
+uint32_t last_loop_time = 0;
+uint32_t cnt = 0;
 void loop() {
   //delay(2000);
   //Serial.println("working...");
-  MIDI.read(); 
-
-  delay(6);
-  for (int i = 0; i < 8; i++) {
-    voice_state *voice = &voices[i];
-    if (!voice->gate && voice->amp > 0) {
-      voice->amp--;
+  MIDI.read();
+  if (millis() - last_loop_time > 5) {
+    last_loop_time = millis();
+    for (int i = 0; i < 8; i++) {
+      voice_state *voice = &voices[i];
+      update_adsr(voice,cnt++);
+      if (!voice->gate && voice->amp > 0) {
+        voice->amp--;
+      }
     }
+    last_loop_time = millis();
   }
 }
 

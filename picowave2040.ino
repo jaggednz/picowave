@@ -1,4 +1,4 @@
-#include <PWMAudio.h>
+#include "pwmdac/PWMAudio.cpp"
 //#include "ppg/ppg.h"
 //#include "ppg/ppg_osc.h"
 #include "ppg/ppg_data.h"
@@ -19,30 +19,27 @@ Adafruit_USBD_MIDI usb_midi;
 // and attach usb_midi as the transport.
 MIDI_CREATE_INSTANCE(Adafruit_USBD_MIDI, usb_midi, MIDI);
 
-PWMAudio pwm_channel1(0, true); // GP0 = left, GP1 = right
-PWMAudio pwm_channel2(2, true); // GP0 = left, GP1 = right
-PWMAudio pwm_channel3(4, true); // GP0 = left, GP1 = right
-PWMAudio pwm_channel4(6, true); // GP0 = left, GP1 = right
+PWMAudio pwm_channel1(8, true); // GP0 = left, GP1 = right
+PWMAudio pwm_channel2(2, true); // GP2 = left, GP3 = right
+PWMAudio pwm_channel3(4, true); // GP4 = left, GP5 = right
+PWMAudio pwm_channel4(6, true); // GP8 = left, GP7 = right
 
 //const int freq = 48000; // Output frequency for PWM
-const int freq = 32470; //12bit - 133mhz / 4096
-const int base_freq = 0xffffffff / freq;
+const int sample_freq = 32470; //12bit - 133mhz / 4096
+const int base_freq = 0xffffffff / sample_freq;
 const uint8_t N = 7; //Number of bits in wavetable
+const uint8_t N_ADJ = 32-N; 
 
 static filter1pole filter;
 static int8_t filter_cutoff = 63;
 
 unsigned int lfo = 0;
+unsigned int inverse_lfo = 0;
 int16_t modulation = 0;
 uint8_t modulation_step = 13;
 
 uint8_t wta_sel = 0;
-uint8_t wtb_sel = 28;
-
-const int notes[] = { 784/2, 440, 784/4, 220, 784/8, 110, 784/16, 55};
-const int dly[] =   { 400, 600, 600, 400, 400, 400, 400, 400};
-
-const int noteCnt = sizeof(notes) / sizeof(notes[0]);
+uint8_t wtb_sel = 1;
 
 #define ADSR_COUNT 3
 
@@ -52,11 +49,13 @@ const int noteCnt = sizeof(notes) / sizeof(notes[0]);
 #define ADSR_SUSTAIN 3
 #define ADSR_RELEASE 4
 
+const uint16_t ADSR_MAX = 2047;
+
 typedef struct {
   uint8_t attack = 50;
-  uint8_t decay = 50;
-  uint16_t sustain = 200;
-  uint8_t release = 50;
+  uint8_t decay = 25;
+  uint16_t sustain = ADSR_MAX;
+  uint8_t release = 25;
   bool linear = true;
 } adsr_eg;
 
@@ -83,7 +82,7 @@ typedef struct {
   uint32_t phase_accum = 0x00000000;
   uint32_t sub_phase_step = 0;
   uint32_t sub_phase_accum = 0x00000000;
-  int16_t output;
+  uint32_t output;
 } voice_state;
 
 const uint8_t VOICE_COUNT = 8;
@@ -91,7 +90,6 @@ voice_state voices[8];
 
 uint8_t voice_alloc_head = 0;
 uint8_t voice_alloc_tail = 1;
-uint8_t voice_allocation[8] = { 0, 1, 2, 3, 4, 5, 6, 7};
 
 uint8_t  address_pointer = 0x00;
 
@@ -99,15 +97,15 @@ uint8_t sineTable[128]; // Precompute sine wave in 128 steps
 uint8_t wavetableA[128]; // Precompute sine wave in 128 steps
 uint8_t wavetableB[128]; // Precompute sine wave in 128 steps
 
-void update_adsr(voice_state *voice, uint32_t cnt) {
+void update_adsr(voice_state *voice) {
   patch *curr = &current_patch;
   for (int i = 0; i < ADSR_COUNT; i++) {
     adsr_eg *adsr = &curr->adsr[i];
     switch(voice->adsr_state[i]) {
       case ADSR_ATTACK:
         voice->adsr_value[i] += adsr->attack;
-        if (voice->adsr_value[i] >= 2047) {
-          voice->adsr_value[i] = 2047;
+        if (voice->adsr_value[i] >= ADSR_MAX) {
+          voice->adsr_value[i] = ADSR_MAX;
           voice->adsr_state[i] = ADSR_DECAY;
         }
         if (!voice->gate) {
@@ -145,50 +143,45 @@ void update_adsr(voice_state *voice, uint32_t cnt) {
         }
         break;
     }
-    if (voice->id == 0 && i == 0 && cnt%64 == 0) {
-      Serial.printf("ADSR %d: %d - %d >> A%d D%d S%d R%d \n",cnt, voice->adsr_state[i],voice->adsr_value[i],adsr->attack,adsr->decay,adsr->sustain,adsr->release);
-    }
   }
   
 }
 
 void inline update_voice(voice_state *voice) {
   uint8_t phase;
-  uint8_t subPhase;
 
   voice->phase_accum += voice->phase_step;
   //voice->sub_phase_accum += voice->sub_phase_step;
   // 32 accumulator bits - 7 wavetable bits
-  phase = voice->phase_accum >> (32-N);
+  phase = voice->phase_accum >> N_ADJ;
   //subPhase = voice->sub_phase_accum >> (32-1); //1Bit SUB
-  voice->output = ((wavetableA[phase]) * lfo);
-  voice->output += ((wavetableB[phase]) * (127-lfo));
+  voice->output =  wavetableA[phase] * inverse_lfo;
+  voice->output += wavetableB[phase] * lfo;
   //voice->output += subPhase * 127;
   //output = filter1pole_feed(&filter, (eg>>4), output);
-  voice->output = (voice->output>>8) * (voice->adsr_value[0]>>3);
+  voice->output = (voice->output * voice->adsr_value[0])>>11;
 }
 
 void inline update_channel(PWMAudio &pwm_channel, voice_state *voiceA, voice_state *voiceB) {
-  uint8_t phaseA, phaseB;
-  uint8_t subPhaseA, subPhaseB;
-  while (pwm_channel.availableForWrite()) {
+  while (pwm_channel.unsafeAvailableForWrite()) {
     //Sinewave LFO
     lfo = sineTable[((modulation>>8)&127)];
+    inverse_lfo = 127-lfo;
 
     update_voice(voiceA);
     update_voice(voiceB);
 
     //voiceA->output -= rosc_hw->randombit;
     //voiceB->output -= rosc_hw->randombit;
-
-    pwm_channel.write(voiceA->output);
-    pwm_channel.write(voiceB->output);
+    pwm_channel.writeStereo((uint16_t)voiceA->output, (uint16_t)voiceB->output, false);
+    //pwm_channel.write((uint16_t)voiceA->output);
+    //pwm_channel.write((uint16_t)voiceB->output);
   }
 }
 
 void channel1_cb() {
-  modulation += modulation_step;
   update_channel(pwm_channel1, &voices[0], &voices[1]);
+  modulation += modulation_step;
 }
 
 void channel2_cb() {
@@ -220,7 +213,6 @@ void load_wavetable(uint8_t table[], uint8_t index, bool print = false) {
   }
 }
 
-uint8_t assign_voice = 0;
 void handleNoteOn(byte channel, byte pitch, byte velocity)
 {
   // Log when a note is pressed.
@@ -234,20 +226,19 @@ void handleNoteOn(byte channel, byte pitch, byte velocity)
   //Serial.println(velocity);
   
   bool assigned = false;
-  for (int i = 0; i < 8 && !assigned; i++) {
+  for (int i = 0; i < VOICE_COUNT && !assigned; i++) {
     voice_state *voice = &voices[voice_alloc_head];
     if (!voice->gate) {
-      assign_voice = voice_alloc_head;
       assigned = true;
     }
     voice_alloc_head++;
     voice_alloc_head %= VOICE_COUNT;
   }
 
-  voice_state *voice = &voices[assign_voice];
+  voice_state *voice = &voices[voice_alloc_head];
   
-  //Serial.print(" voice alloc = ");
-  //Serial.println(assign_voice);
+  Serial.print(" voice alloc = ");
+  Serial.println(voice_alloc_head);
 
   voice->note = pitch;
   voice->freq = midiNoteFreq[pitch];
@@ -268,7 +259,7 @@ void handleNoteOff(byte channel, byte pitch, byte velocity)
 
   //Serial.print(" velocity = ");
   //Serial.println(velocity);
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < VOICE_COUNT; i++) {
     voice_state *voice = &voices[i];
     if (voice->note == pitch) {
       voice->gate = false;
@@ -331,26 +322,31 @@ void setup() {
   for (int i = 0; i < 128; i++) {
     sineTable[i] = (int) 128 * sin(i * 2.0 * 3.14159 / 128.0);
   }
+
   load_wavetable(wavetableA, wta_sel,true);
   load_wavetable(wavetableB, wtb_sel);
 
-  pwm_channel1.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel1.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel1.onTransmit(channel1_cb);
-  pwm_channel1.begin(freq);
+  pwm_channel1.begin(sample_freq);
+  channel1_cb();
 
-  pwm_channel2.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel2.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel2.onTransmit(channel2_cb);
-  pwm_channel2.begin(freq);
+  pwm_channel2.begin(sample_freq);
+  channel2_cb();
 
-  pwm_channel3.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel3.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel3.onTransmit(channel3_cb);
-  pwm_channel3.begin(freq);
+  pwm_channel3.begin(sample_freq);
+  channel3_cb();
 
-  pwm_channel4.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel4.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel4.onTransmit(channel4_cb);
-  pwm_channel4.begin(freq);
+  pwm_channel4.begin(sample_freq);
+  channel4_cb();
 
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < VOICE_COUNT; i++) {
       voice_state *voice = &voices[i];
       voice->id = i;
   }
@@ -367,9 +363,9 @@ void loop() {
   MIDI.read();
   if (millis() - last_loop_time > 5) {
     last_loop_time = millis();
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < VOICE_COUNT; i++) {
       voice_state *voice = &voices[i];
-      update_adsr(voice,cnt++);
+      update_adsr(voice);
       if (!voice->gate && voice->amp > 0) {
         voice->amp--;
       }

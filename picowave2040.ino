@@ -226,16 +226,15 @@ void handleNoteOn(byte channel, byte pitch, byte velocity)
   //Serial.println(velocity);
   
   bool assigned = false;
+  voice_state *voice;
   for (int i = 0; i < VOICE_COUNT && !assigned; i++) {
-    voice_state *voice = &voices[voice_alloc_head];
+    voice = &voices[voice_alloc_head];
     if (!voice->gate) {
       assigned = true;
     }
     voice_alloc_head++;
     voice_alloc_head %= VOICE_COUNT;
   }
-
-  voice_state *voice = &voices[voice_alloc_head];
   
   Serial.print(" voice alloc = ");
   Serial.println(voice_alloc_head);

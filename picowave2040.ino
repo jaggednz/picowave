@@ -10,13 +10,7 @@
 
 #include <pico/rand.h>
 
-#include <Arduino.h>
-#include <U8g2lib.h>
-#ifdef U8X8_HAVE_HW_I2C
-#include <Wire.h>
-#endif
-
-U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, /* reset=*/ U8X8_PIN_NONE);
+#include "screen.h"
 
 int midiNoteFreq[] = {8, 9, 9, 10, 10, 11, 12, 12, 13, 14, 15, 15, 16, 17, 18, 19, 21, 22, 23, 24, 26, 28, 29, 31, 33, 35, 37, 39, 41, 44, 46, 49, 52, 55, 58, 62, 65, 69, 73, 78, 82, 87, 92, 98, 104, 110, 117, 123, 131, 139, 147, 156, 165, 175, 185, 196, 208, 220, 233, 247, 262, 277, 294, 311, 330, 349, 370, 392, 415, 440, 466, 494, 523, 554, 587, 622, 659, 698, 740, 784, 831, 880, 932, 988, 1047, 1109, 1175, 1245, 1319, 1397, 1480, 1568, 1661, 1760, 1865, 1976, 2093, 2217, 2349, 2489, 2637, 2794, 2960, 3136, 3322, 3520, 3729, 3951, 4186, 4435, 4699, 4978, 5274, 5588, 5920, 6272, 6645, 7040, 7459, 7902, 8372, 8870, 9397, 9956, 10548, 11175, 11840, 12544};
 
@@ -102,8 +96,8 @@ uint8_t voice_alloc_tail = 1;
 uint8_t  address_pointer = 0x00;
 
 uint8_t sineTable[128]; // Precompute sine wave in 128 steps
-uint8_t wavetableA[128]; // Precompute sine wave in 128 steps
-uint8_t wavetableB[128]; // Precompute sine wave in 128 steps
+uint8_t wavetable[512]; // Precompute sine wave in 128 steps
+uint8_t screen_wavetable[512];
 
 void update_adsr(voice_state *voice) {
   patch *curr = &current_patch;
@@ -163,8 +157,8 @@ void inline update_voice(voice_state *voice) {
   // 32 accumulator bits - 7 wavetable bits
   phase = voice->phase_accum >> N_ADJ;
   //subPhase = voice->sub_phase_accum >> (32-1); //1Bit SUB
-  voice->output =  wavetableA[phase] * inverse_lfo;
-  voice->output += wavetableB[phase] * lfo;
+  voice->output =  wavetable[phase] * inverse_lfo;
+  voice->output += wavetable[phase+128] * lfo;
   //voice->output += subPhase * 127;
   //output = filter1pole_feed(&filter, (eg>>4), output);
   voice->output = (voice->output * voice->adsr_value[0])>>11;
@@ -204,27 +198,19 @@ void channel4_cb() {
   update_channel(pwm_channel4, &voices[6], &voices[7]);
 }
 
-void load_wavetable(uint8_t table[], uint8_t index, bool draw = false) {
-  int offset = ppg_wavetable_offsets[index];
+void load_wavetable(uint8_t table[], uint16_t offset, uint8_t index, bool draw = false) {
+  int load_offset = ppg_wavetable_offsets[index];
   for (int i = 0; i < 64; i++) {
-    table[i] = ppg_waveforms_data[offset+i];
+    table[offset + i] = ppg_waveforms_data[load_offset+i];
   }
   for (int i = 0; i < 64; i++) {
-    table[i+64] = 0xFF - ppg_waveforms_data[offset+i];
+    table[offset + i+64] = 0xFF - ppg_waveforms_data[load_offset+i];
   }
-  if (draw){
-    u8g2.clearBuffer();					// clear the internal memory
-    u8g2.drawStr(0,10,"WaveTable");	// write something to the internal memory
-    int j = 0;
-    int y1 = table[0]>>2;
-    int y2= 0;
-    for (int i = 0; i < 128; i++) {
-      y2 = table[i]>>2;
-      u8g2.drawLine(j, y1, i, y2);
-      j=i;
-      y1 = y2;
-    }
-    u8g2.sendBuffer();					// transfer internal memory to the display
+  for (int i = 0; i < 512; i++) {
+    screen_wavetable[i] = table[i]>>2;
+  }
+  if (draw) {
+    screen_set_show_wavetable(offset);
   }
 }
 
@@ -286,10 +272,10 @@ void handleCC(byte channel, byte control, byte value)
   patch *patch = &current_patch;
   if (channel != 1) { return; }
   if (control == 0) {
-    load_wavetable(wavetableA, (int)value%28,true);
+    load_wavetable(wavetable,0, (int)value%28,true);
   }
   if (control == 2) {
-    load_wavetable(wavetableB, (int)value%28,true);
+    load_wavetable(wavetable,128, (int)value%28,true);
   }
   if (control == 1) {
     modulation_step = (int) value;
@@ -312,11 +298,7 @@ void handleCC(byte channel, byte control, byte value)
   }
 }
 
-void setup() {
-  #if defined(ARDUINO_ARCH_MBED) && defined(ARDUINO_ARCH_RP2040)
-    // Manual begin() is required on core without built-in support for TinyUSB such as mbed rp2040
-    TinyUSB_Device_Init(0);
-  #endif
+void midi_init() {
   MIDI.begin(MIDI_CHANNEL_OMNI);
   MIDI.turnThruOff(); //otherwise it echoes in to out
 
@@ -329,16 +311,26 @@ void setup() {
   MIDI.setHandleNoteOff(handleNoteOff);
 
   MIDI.setHandleControlChange(handleCC);
+}
+
+bool boot_complete = false;
+void setup() {
+  #if defined(ARDUINO_ARCH_MBED) && defined(ARDUINO_ARCH_RP2040)
+    // Manual begin() is required on core without built-in support for TinyUSB such as mbed rp2040
+    TinyUSB_Device_Init(0);
+  #endif
+  
+  midi_init();
 
   Serial.begin(115200);
 
   // Set up sine table for waveform generation
   for (int i = 0; i < 128; i++) {
-    sineTable[i] = (int) 128 * sin(i * 2.0 * 3.14159 / 128.0);
+    sineTable[i] = (int) 64 * (sin(i * 2.0 * 3.14159 / 128.0)+1);
   }
 
-  load_wavetable(wavetableA, wta_sel);
-  load_wavetable(wavetableB, wtb_sel);
+  load_wavetable(wavetable,0, wta_sel);
+  load_wavetable(wavetable,128, wtb_sel);
 
   pwm_channel1.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel1.onTransmit(channel1_cb);
@@ -367,43 +359,14 @@ void setup() {
 
   // wait until device mounted
   while( !TinyUSBDevice.mounted() ) delay(1);
-
-  Wire.setSCL(21);
-  Wire.setSDA(20);
-  u8g2.begin();
-  u8g2.setFont(u8g2_font_bitcasual_tr);	// choose a suitable font
-  u8g2.clearBuffer();					// clear the internal memory
-  u8g2.drawStr(0,10,"PICOWAVE 2040");	// write something to the internal memory
-  u8g2.sendBuffer();					// transfer internal memory to the display    
+  boot_complete = true;
 }
-
-void draw_morphing_wave(){
-    u8g2.clearBuffer();					// clear the internal memory
-    //u8g2.drawStr(0,10,"WaveTable");	// write something to the internal memory
-    int j = 0;
-    int y1;
-    y1 =  wavetableA[0] * inverse_lfo;
-    y1 += wavetableB[0] * lfo;
-    y1 >>= 8;
-    int y2= 0;
-    for (int i = 0; i < 128; i++) {
-      y2 =  wavetableA[i] * inverse_lfo;
-      y2 += wavetableB[i] * lfo;
-      y2 >>= 8;
-      u8g2.drawLine(j, y1, i, y2);
-      j=i;
-      y1 = y2;
-    }
-    u8g2.sendBuffer();
-}
-
 
 uint32_t last_loop_time = 0;
 uint32_t cnt = 0;
 void loop() {   
   //Serial.println("working...");
   MIDI.read();
-  draw_morphing_wave();
   if (millis() - last_loop_time > 5) {
     last_loop_time = millis();
     for (int i = 0; i < VOICE_COUNT; i++) {
@@ -414,6 +377,21 @@ void loop() {
       }
     }
     last_loop_time = millis();
+  }
+}
+
+void setup1(){
+  screen_init();
+  screen_welcome(); 
+  //Wait for the other core to finish booting.
+  while( !boot_complete ) delay(1);
+}
+
+uint32_t last_screen_update = millis();
+void loop1(){
+  if (millis() - last_screen_update > 25) {
+    screen_update(screen_wavetable, lfo);
+    last_screen_update = millis();
   }
 }
 

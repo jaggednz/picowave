@@ -27,6 +27,7 @@ void screen_init() {
   Wire.setSDA(20);
   u8g2.begin();
   u8g2.setFont(u8g2_font_bitcasual_tr);	// choose a suitable font
+  u8g2.setContrast(64);
 }
 
 void screen_welcome(){

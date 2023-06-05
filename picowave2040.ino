@@ -1,12 +1,13 @@
 #include "pwmdac/PWMAudio.cpp"
-//#include "ppg/ppg.h"
-//#include "ppg/ppg_osc.h"
+
 #include "ppg/ppg_data.h"
 #include "ppg/ppg_data.c"
 #include "filter.h"
 
 #include <Adafruit_TinyUSB.h>
 #include <MIDI.h>
+
+#include <LittleFS.h>
 
 #include <pico/rand.h>
 
@@ -31,6 +32,9 @@ const int sample_freq = 32470; //12bit - 133mhz / 4096
 const int base_freq = 0xffffffff / sample_freq;
 const uint8_t N = 7; //Number of bits in wavetable
 const uint8_t N_ADJ = 32-N; 
+
+char loaded_wavetable_filename[32] = "FM_-_COM.WAV";
+uint16_t loaded_wavetable_file[256*128];
 
 static filter1pole filter;
 static int8_t filter_cutoff = 63;
@@ -198,14 +202,48 @@ void channel4_cb() {
   update_channel(pwm_channel4, &voices[6], &voices[7]);
 }
 
+void load_wavetable_file(){
+
+  uint8_t buff[100];
+  uint8_t msb;
+  bool hold = false;
+  uint16_t j = 0;
+  uint32_t i = 0;
+  int16_t tmp;
+  File f = LittleFS.open("/wavetables/FM_-_COM.WAV","r");
+  //File f = LittleFS.open("/wavetables/CYBERNET.WAV","r");
+  //Blindly seek to the end of the RIFF header
+  f.seek(0x2B);
+  while (f.available() > 0) {
+    j = f.read(buff,100);
+    for (int k = 0; k < j; k++) {
+      if (hold) {
+        tmp = (int16_t)(msb<<8| buff[k]);
+        if (i < 256*128) {
+          loaded_wavetable_file[i] = (uint16_t) tmp+32768;
+        }
+        i++;
+        hold = false;
+      } else {
+        msb = buff[k];
+        hold=true;
+      }
+    }
+  }
+  f.close();
+  Serial.print("Read  ");
+  Serial.print(i);
+  Serial.println(" uint16 from file.");
+}
+
 void load_wavetable(uint8_t table[], uint16_t offset, uint8_t index, bool draw = false) {
-  int load_offset = ppg_wavetable_offsets[index];
-  for (int i = 0; i < 64; i++) {
-    table[offset + i] = ppg_waveforms_data[load_offset+i];
+  uint load_offset = index*0xFF;
+  for (int i = 0; i < 128; i++) {
+    table[offset + i] = loaded_wavetable_file[load_offset+i]>>8;
   }
-  for (int i = 0; i < 64; i++) {
-    table[offset + i+64] = 0xFF - ppg_waveforms_data[load_offset+i];
-  }
+  //for (int i = 0; i < 64; i++) {
+  //  table[offset + i+64] = 0xFF - ppg_waveforms_data[load_offset+i];
+  //}
   for (int i = 0; i < 512; i++) {
     screen_wavetable[i] = table[i]>>2;
   }
@@ -320,9 +358,17 @@ void setup() {
     TinyUSB_Device_Init(0);
   #endif
   
+  //Start MIDI
   midi_init();
-
+  //Start Serial
   Serial.begin(115200);
+  //Start FS
+  LittleFSConfig cfg;
+  cfg.setAutoFormat(false);
+  LittleFS.setConfig(cfg);
+  LittleFS.begin();
+
+  load_wavetable_file();
 
   // Set up sine table for waveform generation
   for (int i = 0; i < 128; i++) {
@@ -376,6 +422,19 @@ void loop() {
         voice->amp--;
       }
     }
+
+    // delay(50);
+    // Serial.println("Start");
+    // Dir dir = LittleFS.openDir("/wavetables");
+    // // or Dir dir = LittleFS.openDir("/data");
+    // while (dir.next()) {
+    //     Serial.print(dir.fileName());
+    //     if(dir.fileSize()) {
+    //         File f = dir.openFile("r");
+    //         Serial.println(f.size());
+    //     }
+    // }
+
     last_loop_time = millis();
   }
 }

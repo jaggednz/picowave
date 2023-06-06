@@ -13,7 +13,9 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, /* reset=*/ U8X8_PIN_NONE);
 #define SCREEN_MODE_ADSR 3
 #define SCREEN_MODE_LFO 4
 
-const uint16_t SCREEN_KEEP_TIME = 500;
+#define SCREEN_MODE_FATAL 99
+
+const uint16_t SCREEN_KEEP_TIME = 800;
 const uint16_t SCREEN_LOW_POWER_TIME = 60000;
 const uint16_t SCREEN_SLEEP_TIME = 0xFFFF;
 
@@ -35,6 +37,15 @@ void screen_welcome(){
   screen_mode_keep = millis();
   u8g2.clearBuffer();					// clear the internal memory
   u8g2.drawStr(0,10,"PICOWAVE 2040");	// write something to the internal memory
+  u8g2.sendBuffer();					// transfer internal memory to the display   
+}
+
+void screen_file_error() {
+  screen_mode = SCREEN_MODE_FATAL;
+  screen_mode_keep = millis();
+  u8g2.clearBuffer();					// clear the internal memory
+  u8g2.drawStr(0,15,"UNABLE TO OPEN");	// write something to the internal memory
+  u8g2.drawStr(12,30,"WAVETABLE");
   u8g2.sendBuffer();					// transfer internal memory to the display   
 }
 
@@ -81,6 +92,9 @@ void screen_draw_morphing_wave(uint8_t table[], uint8_t morph){
 }
 
 void screen_update(uint8_t table[],uint8_t morph){
+  if (screen_mode == SCREEN_MODE_FATAL) {
+    return;
+  }
   //Default back to idle screen mode if current screen mode expired
   if (screen_mode != SCREEN_MODE_IDLE && millis() - screen_mode_keep > SCREEN_KEEP_TIME) {
     screen_mode = SCREEN_MODE_IDLE;

@@ -210,7 +210,31 @@ void load_wavetable_file(){
   uint16_t j = 0;
   uint32_t i = 0;
   int16_t tmp;
-  File f = LittleFS.open("/wavetables/FM_-_COM.WAV","r");
+
+  //Open the Default wavetable
+  //File f = LittleFS.open("/wavetables/PPG_BES.WAV","r");
+  //if (!f) {
+  //Serial.println("Default wavetable not found");
+  //Open first file in the wavetables directory
+  Dir d = LittleFS.openDir("/wavetables");
+  d.rewind();
+
+//FIXME only some wavetables open 
+  d.next();
+  d.next();
+  d.next();
+  Serial.print("Opening ");
+  Serial.println(d.fileName());
+  Serial.flush();
+  File f = d.openFile("r");
+  //}
+  if (!f) {
+    screen_file_error();
+    Serial.println("Error opening wavetable");
+  } else {
+    Serial.println("File opened");
+  }
+  //File f = LittleFS.open("/wavetables/FM_-_COM.WAV","r");
   //File f = LittleFS.open("/wavetables/CYBERNET.WAV","r");
   //Blindly seek to the end of the RIFF header
   f.seek(0x2B);
@@ -220,10 +244,10 @@ void load_wavetable_file(){
       if (hold) {
         tmp = (int16_t)(msb<<8| buff[k]);
         //Don't over fill the wavetable array, that would be bad!
-        if (i < WAVETABLE_FILE_SAMPLES-1) {
+        if (i < (64*256*2)) {
           loaded_wavetable_file[i] = (uint16_t) tmp+32768;
+          i++;
         }
-        i++;
         hold = false;
       } else {
         msb = buff[k];
@@ -369,8 +393,29 @@ void setup() {
   LittleFS.setConfig(cfg);
   LittleFS.begin();
 
-  load_wavetable_file();
+  delay(6000);
 
+  Serial.println("ls /");
+  Dir root_dir = LittleFS.openDir("/");
+  // or Dir dir = LittleFS.openDir("/data");
+  while (root_dir.next()) {
+      Serial.println(root_dir.fileName());
+  }
+  Serial.println("ls /wavetables");
+  Dir dir = LittleFS.openDir("/wavetables");
+  // or Dir dir = LittleFS.openDir("/data");
+  while (dir.next()) {
+      Serial.print(dir.fileName());
+      if(dir.fileSize()) {
+          File f = dir.openFile("r");
+          Serial.print(" - ");
+          Serial.println(f.size());
+      }
+  }
+  Serial.println("Loading default wavetable");
+  Serial.flush();
+  load_wavetable_file();
+  Serial.println("Loading complete");
   // Set up sine table for waveform generation
   for (int i = 0; i < 128; i++) {
     sineTable[i] = (int) 64 * (sin(i * 2.0 * 3.14159 / 128.0)+1);

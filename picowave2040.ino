@@ -30,11 +30,13 @@ PWMAudio pwm_channel4(6, true); // GP8 = left, GP7 = right
 //const int freq = 48000; // Output frequency for PWM
 const int sample_freq = 32470; //12bit - 133mhz / 4096
 const int base_freq = 0xffffffff / sample_freq;
-const uint8_t N = 7; //Number of bits in wavetable
+const uint8_t N = 8; //Number of bits in wavetable
 const uint8_t N_ADJ = 32-N; 
 
+#define WAVETABLE_FILE_SAMPLES 64*256*2 //64 x 256 16bit samples
+
 char loaded_wavetable_filename[32] = "FM_-_COM.WAV";
-uint16_t loaded_wavetable_file[256*128];
+uint16_t loaded_wavetable_file[WAVETABLE_FILE_SAMPLES];
 
 static filter1pole filter;
 static int8_t filter_cutoff = 63;
@@ -100,7 +102,7 @@ uint8_t voice_alloc_tail = 1;
 uint8_t  address_pointer = 0x00;
 
 uint8_t sineTable[128]; // Precompute sine wave in 128 steps
-uint8_t wavetable[512]; // Precompute sine wave in 128 steps
+uint16_t wavetable[256*2]; // Precompute sine wave in 128 steps
 uint8_t screen_wavetable[512];
 
 void update_adsr(voice_state *voice) {
@@ -162,10 +164,10 @@ void inline update_voice(voice_state *voice) {
   phase = voice->phase_accum >> N_ADJ;
   //subPhase = voice->sub_phase_accum >> (32-1); //1Bit SUB
   voice->output =  wavetable[phase] * inverse_lfo;
-  voice->output += wavetable[phase+128] * lfo;
+  voice->output += wavetable[phase+256] * lfo;
   //voice->output += subPhase * 127;
   //output = filter1pole_feed(&filter, (eg>>4), output);
-  voice->output = (voice->output * voice->adsr_value[0])>>11;
+  voice->output = ((voice->output>>11) * voice->adsr_value[0])>>9;
 }
 
 void inline update_channel(PWMAudio &pwm_channel, voice_state *voiceA, voice_state *voiceB) {
@@ -180,8 +182,6 @@ void inline update_channel(PWMAudio &pwm_channel, voice_state *voiceA, voice_sta
     //voiceA->output -= rosc_hw->randombit;
     //voiceB->output -= rosc_hw->randombit;
     pwm_channel.writeStereo((uint16_t)voiceA->output, (uint16_t)voiceB->output, false);
-    //pwm_channel.write((uint16_t)voiceA->output);
-    //pwm_channel.write((uint16_t)voiceB->output);
   }
 }
 
@@ -219,7 +219,8 @@ void load_wavetable_file(){
     for (int k = 0; k < j; k++) {
       if (hold) {
         tmp = (int16_t)(msb<<8| buff[k]);
-        if (i < 256*128) {
+        //Don't over fill the wavetable array, that would be bad!
+        if (i < WAVETABLE_FILE_SAMPLES-1) {
           loaded_wavetable_file[i] = (uint16_t) tmp+32768;
         }
         i++;
@@ -236,19 +237,19 @@ void load_wavetable_file(){
   Serial.println(" uint16 from file.");
 }
 
-void load_wavetable(uint8_t table[], uint16_t offset, uint8_t index, bool draw = false) {
+void load_wavetable(uint16_t table[], uint8_t position, uint8_t index, bool draw = false) {
   uint load_offset = index*0xFF;
-  for (int i = 0; i < 128; i++) {
-    table[offset + i] = loaded_wavetable_file[load_offset+i]>>8;
+  uint load_position = position*0xFF;
+  for (int i = 0; i < 256; i++) {
+    table[load_position + i] = loaded_wavetable_file[load_offset+i];
   }
-  //for (int i = 0; i < 64; i++) {
-  //  table[offset + i+64] = 0xFF - ppg_waveforms_data[load_offset+i];
-  //}
-  for (int i = 0; i < 512; i++) {
-    screen_wavetable[i] = table[i]>>2;
+  
+  //For display we only need every second sample, scaled to 0-64
+  for (int i = 0; i < 256; i++) {
+    screen_wavetable[i] = table[i*2]>>10;
   }
   if (draw) {
-    screen_set_show_wavetable(offset);
+    screen_set_show_wavetable(position);
   }
 }
 
@@ -313,7 +314,7 @@ void handleCC(byte channel, byte control, byte value)
     load_wavetable(wavetable,0, (int)value%28,true);
   }
   if (control == 2) {
-    load_wavetable(wavetable,128, (int)value%28,true);
+    load_wavetable(wavetable,1, (int)value%28,true);
   }
   if (control == 1) {
     modulation_step = (int) value;
@@ -376,7 +377,7 @@ void setup() {
   }
 
   load_wavetable(wavetable,0, wta_sel);
-  load_wavetable(wavetable,128, wtb_sel);
+  load_wavetable(wavetable,1, wtb_sel);
 
   pwm_channel1.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel1.onTransmit(channel1_cb);

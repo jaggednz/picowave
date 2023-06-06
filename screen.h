@@ -38,8 +38,8 @@ void screen_welcome(){
   u8g2.sendBuffer();					// transfer internal memory to the display   
 }
 
-void screen_set_show_wavetable(uint16_t offset) {
-  screen_wave_offset = offset;
+void screen_set_show_wavetable(uint8_t position) {
+  screen_wave_offset = position*128;
   screen_mode = SCREEN_MODE_WAVETABLE;
   screen_mode_keep = millis();
 }

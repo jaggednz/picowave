@@ -1,7 +1,7 @@
 #include "pwmdac/PWMAudio.cpp"
 
-#include "ppg/ppg_data.h"
-#include "ppg/ppg_data.c"
+//#include "ppg/ppg_data.h"
+//#include "ppg/ppg_data.c"
 #include "filter.h"
 
 #include <Adafruit_TinyUSB.h>
@@ -9,7 +9,7 @@
 
 #include <LittleFS.h>
 
-#include <pico/rand.h>
+//#include <pico/rand.h>
 
 #include "screen.h"
 
@@ -78,6 +78,8 @@ typedef struct {
 
   uint8_t waveA;
   uint8_t waveB;
+  uint16_t wave_mix;
+  uint16_t wave_mix_inv;
   bool gate = false;
 
   uint8_t  adsr_state[ADSR_COUNT] = {0,0,0};
@@ -143,7 +145,7 @@ void update_adsr(voice_state *voice) {
           voice->adsr_value[i] = 0;
           voice->adsr_state[i] = ADSR_IDLE;
         }
-        break;
+        //go into idle and check for new gate!
       case ADSR_IDLE:
       default:
         if (voice->gate) {
@@ -159,15 +161,19 @@ void inline update_voice(voice_state *voice) {
   uint8_t phase;
 
   voice->phase_accum += voice->phase_step;
-  //voice->sub_phase_accum += voice->sub_phase_step;
   // 32 accumulator bits - 7 wavetable bits
   phase = voice->phase_accum >> N_ADJ;
+
+  //voice->sub_phase_accum += voice->sub_phase_step;
   //subPhase = voice->sub_phase_accum >> (32-1); //1Bit SUB
-  voice->output =  wavetable[phase] * inverse_lfo;
-  voice->output += wavetable[phase+256] * lfo;
+  voice->output =  (//wavetable[phase]);
+     (wavetable[phase] * (2047-voice->adsr_value[1]))
+     +
+     (wavetable[phase+256] * (voice->adsr_value[1]-1))
+    ) >> 11;
   //voice->output += subPhase * 127;
   //output = filter1pole_feed(&filter, (eg>>4), output);
-  voice->output = ((voice->output>>11) * voice->adsr_value[0])>>9;
+  voice->output = (voice->output * voice->adsr_value[0])>>11;
 }
 
 void inline update_channel(PWMAudio &pwm_channel, voice_state *voiceA, voice_state *voiceB) {
@@ -181,7 +187,7 @@ void inline update_channel(PWMAudio &pwm_channel, voice_state *voiceA, voice_sta
 
     //voiceA->output -= rosc_hw->randombit;
     //voiceB->output -= rosc_hw->randombit;
-    pwm_channel.writeStereo((uint16_t)voiceA->output, (uint16_t)voiceB->output, false);
+    pwm_channel.writeStereo(voiceA->output, voiceB->output, false);
   }
 }
 
@@ -189,22 +195,19 @@ void channel1_cb() {
   update_channel(pwm_channel1, &voices[0], &voices[1]);
   modulation += modulation_step;
 }
-
 void channel2_cb() {
   update_channel(pwm_channel2, &voices[2], &voices[3]);
 }
-
 void channel3_cb() {
   update_channel(pwm_channel3, &voices[4], &voices[5]);
 }
-
 void channel4_cb() {
   update_channel(pwm_channel4, &voices[6], &voices[7]);
 }
 
 void load_wavetable_file(){
 
-  uint8_t buff[100];
+  uint8_t buff[64];
   uint8_t msb;
   bool hold = false;
   uint16_t j = 0;
@@ -223,6 +226,7 @@ void load_wavetable_file(){
   d.next();
   d.next();
   d.next();
+  d.next();d.next();d.next();d.next();d.next();d.next();
   Serial.print("Opening ");
   Serial.println(d.fileName());
   Serial.flush();
@@ -239,7 +243,7 @@ void load_wavetable_file(){
   //Blindly seek to the end of the RIFF header
   f.seek(0x2B);
   while (f.available() > 0) {
-    j = f.read(buff,100);
+    j = f.read(buff,64);
     for (int k = 0; k < j; k++) {
       if (hold) {
         tmp = (int16_t)(msb<<8| buff[k]);
@@ -347,16 +351,33 @@ void handleCC(byte channel, byte control, byte value)
     adsr_eg *adsr = &patch->adsr[0];
     adsr->attack = 128 - value;
   }
-  if (control == 44) {
+  if (control == 43) {
     adsr_eg *adsr = &patch->adsr[0];
     adsr->decay = 128 - value;
   }
-  if (control == 11) {
+  if (control == 44) {
     adsr_eg *adsr = &patch->adsr[0];
     adsr->sustain = value<<4;
   }
-  if (control == 5) {
+  if (control == 45) {
     adsr_eg *adsr = &patch->adsr[0];
+    adsr->release = 128 - value;
+  }
+
+  if (control == 46) {
+    adsr_eg *adsr = &patch->adsr[1];
+    adsr->attack = 128 - value;
+  }
+  if (control == 47) {
+    adsr_eg *adsr = &patch->adsr[1];
+    adsr->decay = 128 - value;
+  }
+  if (control == 48) {
+    adsr_eg *adsr = &patch->adsr[1];
+    adsr->sustain = value<<4;
+  }
+  if (control == 49) {
+    adsr_eg *adsr = &patch->adsr[1];
     adsr->release = 128 - value;
   }
 }
@@ -393,25 +414,17 @@ void setup() {
   LittleFS.setConfig(cfg);
   LittleFS.begin();
 
-  delay(6000);
-
-  Serial.println("ls /");
-  Dir root_dir = LittleFS.openDir("/");
-  // or Dir dir = LittleFS.openDir("/data");
-  while (root_dir.next()) {
-      Serial.println(root_dir.fileName());
-  }
-  Serial.println("ls /wavetables");
-  Dir dir = LittleFS.openDir("/wavetables");
-  // or Dir dir = LittleFS.openDir("/data");
-  while (dir.next()) {
-      Serial.print(dir.fileName());
-      if(dir.fileSize()) {
-          File f = dir.openFile("r");
-          Serial.print(" - ");
-          Serial.println(f.size());
-      }
-  }
+  // Serial.println("ls /wavetables");
+  // Dir dir = LittleFS.openDir("/wavetables");
+  // // or Dir dir = LittleFS.openDir("/data");
+  // while (dir.next()) {
+  //     Serial.print(dir.fileName());
+  //     if(dir.fileSize()) {
+  //         File f = dir.openFile("r");
+  //         Serial.print(" - ");
+  //         Serial.println(f.size());
+  //     }
+  // }
   Serial.println("Loading default wavetable");
   Serial.flush();
   load_wavetable_file();
@@ -424,22 +437,22 @@ void setup() {
   load_wavetable(wavetable,0, wta_sel);
   load_wavetable(wavetable,1, wtb_sel);
 
-  pwm_channel1.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel1.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel1.onTransmit(channel1_cb);
   pwm_channel1.begin(sample_freq);
   channel1_cb();
 
-  pwm_channel2.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel2.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel2.onTransmit(channel2_cb);
   pwm_channel2.begin(sample_freq);
   channel2_cb();
 
-  pwm_channel3.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel3.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel3.onTransmit(channel3_cb);
   pwm_channel3.begin(sample_freq);
   channel3_cb();
 
-  pwm_channel4.setBuffers(3, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel4.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
   pwm_channel4.onTransmit(channel4_cb);
   pwm_channel4.begin(sample_freq);
   channel4_cb();
@@ -468,19 +481,6 @@ void loop() {
         voice->amp--;
       }
     }
-
-    // delay(50);
-    // Serial.println("Start");
-    // Dir dir = LittleFS.openDir("/wavetables");
-    // // or Dir dir = LittleFS.openDir("/data");
-    // while (dir.next()) {
-    //     Serial.print(dir.fileName());
-    //     if(dir.fileSize()) {
-    //         File f = dir.openFile("r");
-    //         Serial.println(f.size());
-    //     }
-    // }
-
     last_loop_time = millis();
   }
 }

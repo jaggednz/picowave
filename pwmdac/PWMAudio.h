@@ -57,7 +57,7 @@ public:
     }
 
     // Write 16 bit value to port, user responsible for packing/alignment, etc.
-    size_t writeStereo(uint16_t l_val, uint16_t r_val, bool sync);
+    size_t writeStereo(uint32_t l_sample, uint32_t r_sample, bool sync);
     size_t write(int16_t val, bool sync = true);
     size_t write(int val, bool sync = true) {
         return write((int16_t) val, sync);

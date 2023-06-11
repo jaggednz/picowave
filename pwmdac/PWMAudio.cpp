@@ -165,21 +165,18 @@ int PWMAudio::unsafeAvailableForWrite() {
     return _arb->available();
 }
 
-size_t PWMAudio::writeStereo(uint16_t l_val, uint16_t r_val, bool sync) {
+size_t PWMAudio::writeStereo(uint32_t l_sample, uint32_t r_sample, bool sync) {
     //let's get dangerous!
     //if (!_running) {
     //    return 0;
     //}
 
-    // Go from signed -32K...32K to unsigned 0...64K
-    uint32_t l_sample = (uint32_t)(l_val);
-    uint32_t r_sample = (uint32_t)(r_val);
     // Adjust to the real range
-    l_sample *= _pwmScale;
-    l_sample >>= 16;
+    //l_sample *= _pwmScale;
+    l_sample >>= 4;
 
-    r_sample *= _pwmScale;
-    r_sample >>= 16;
+    //r_sample *= _pwmScale;
+    r_sample >>= 4;
     
     _holdWord = (l_sample & 0xffff) | (r_sample << 16);
     auto ret = _arb->write(_holdWord, sync);

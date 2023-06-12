@@ -38,7 +38,7 @@ const uint8_t N_ADJ = 32-N;
 char loaded_wavetable_filename[32] = "FM_-_COM.WAV";
 uint16_t loaded_wavetable_file[WAVETABLE_FILE_SAMPLES];
 
-static filter1pole filter;
+//static filter1pole filter;
 static int8_t filter_cutoff = 63;
 
 unsigned int lfo = 0;
@@ -90,6 +90,9 @@ typedef struct {
   int freq;
   uint32_t phase_step = 0;
   uint32_t phase_accum = 0x00000000;
+
+  uint32_t filter;
+
   uint32_t sub_phase_step = 0;
   uint32_t sub_phase_accum = 0x00000000;
   uint32_t output;
@@ -172,7 +175,7 @@ void inline update_voice(voice_state *voice) {
      (wavetable[phase+256] * (voice->adsr_value[1]-1))
     ) >> 11;
   //voice->output += subPhase * 127;
-  //output = filter1pole_feed(&filter, (eg>>4), output);
+  voice->output = filter1pole_feed(&voice->filter, filter_cutoff, voice->output);
   voice->output = (voice->output * voice->adsr_value[0])>>11;
 }
 

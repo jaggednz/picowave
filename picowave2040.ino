@@ -440,22 +440,22 @@ void setup() {
   load_wavetable(wavetable,0, wta_sel);
   load_wavetable(wavetable,1, wtb_sel);
 
-  pwm_channel1.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel1.setBuffers(3, 64); // Give larger buffers since we're are 48khz sample rate
   pwm_channel1.onTransmit(channel1_cb);
   pwm_channel1.begin(sample_freq);
   channel1_cb();
 
-  pwm_channel2.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel2.setBuffers(3, 64); // Give larger buffers since we're are 48khz sample rate
   pwm_channel2.onTransmit(channel2_cb);
   pwm_channel2.begin(sample_freq);
   channel2_cb();
 
-  pwm_channel3.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel3.setBuffers(3, 64); // Give larger buffers since we're are 48khz sample rate
   pwm_channel3.onTransmit(channel3_cb);
   pwm_channel3.begin(sample_freq);
   channel3_cb();
 
-  pwm_channel4.setBuffers(4, 32); // Give larger buffers since we're are 48khz sample rate
+  pwm_channel4.setBuffers(3, 64); // Give larger buffers since we're are 48khz sample rate
   pwm_channel4.onTransmit(channel4_cb);
   pwm_channel4.begin(sample_freq);
   channel4_cb();

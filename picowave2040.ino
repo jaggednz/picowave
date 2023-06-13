@@ -1,7 +1,4 @@
 #include "pwmdac/PWMAudio.cpp"
-
-//#include "ppg/ppg_data.h"
-//#include "ppg/ppg_data.c"
 #include "filter.h"
 
 #include <Adafruit_TinyUSB.h>
@@ -39,7 +36,7 @@ char loaded_wavetable_filename[32] = "FM_-_COM.WAV";
 uint16_t loaded_wavetable_file[WAVETABLE_FILE_SAMPLES];
 
 //static filter1pole filter;
-static int8_t filter_cutoff = 63;
+static int8_t filter_cutoff = 127;
 
 unsigned int lfo = 0;
 unsigned int inverse_lfo = 0;
@@ -172,7 +169,7 @@ void inline update_voice(voice_state *voice) {
   voice->output =  (//wavetable[phase]);
      (wavetable[phase] * (2047-voice->adsr_value[1]))
      +
-     (wavetable[phase+256] * (voice->adsr_value[1]-1))
+     (wavetable[phase+255] * (voice->adsr_value[1]-1))
     ) >> 11;
   //voice->output += subPhase * 127;
   voice->output = filter1pole_feed(&voice->filter, filter_cutoff, voice->output);
@@ -229,7 +226,7 @@ void load_wavetable_file(){
   d.next();
   d.next();
   d.next();
-  d.next();d.next();d.next();d.next();d.next();d.next();
+  //d.next();d.next();d.next();d.next();d.next();d.next();
   Serial.print("Opening ");
   Serial.println(d.fileName());
   Serial.flush();
@@ -342,13 +339,16 @@ void handleCC(byte channel, byte control, byte value)
   patch *patch = &current_patch;
   if (channel != 1) { return; }
   if (control == 0) {
-    load_wavetable(wavetable,0, (int)value%28,true);
+    load_wavetable(wavetable,0, (int)value%64,true);
+  }
+   if (control == 1) {
+    modulation_step = (int) value;
   }
   if (control == 2) {
-    load_wavetable(wavetable,1, (int)value%28,true);
+    load_wavetable(wavetable,1, (int)value%64,true);
   }
-  if (control == 1) {
-    modulation_step = (int) value;
+  if (control == 3) {
+    filter_cutoff = value;
   }
   if (control == 42) {
     adsr_eg *adsr = &patch->adsr[0];

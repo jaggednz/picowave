@@ -64,29 +64,19 @@ bool PWMAudio::setStereo(bool stereo) {
 }
 
 bool PWMAudio::setFrequency(int newFreq) {
-    _freq = newFreq;
-
     // Figure out the scale factor for PWM values
-    float fPWM = 65535.0 * _freq; // ideal
-
-    if (fPWM > clock_get_hz(clk_sys)) {
-        // Need to downscale the range to hit the frequency target
-        float pwmMax = (float) clock_get_hz(clk_sys) / (float) _freq;
-        _pwmScale = pwmMax;
-        fPWM = clock_get_hz(clk_sys);
-    } else {
-        _pwmScale = 1 << 16;
-    }
+    //float fPWM = 65535.0 * _freq; // ideal
+    //32470
 
     pwm_config c = pwm_get_default_config();
-    pwm_config_set_clkdiv(&c, clock_get_hz(clk_sys) / fPWM);
-    pwm_config_set_wrap(&c, _pwmScale);
+    pwm_config_set_clkdiv(&c, 1);
+    pwm_config_set_wrap(&c, 4095);
     pwm_init(pwm_gpio_to_slice_num(_pin), &c, _running);
     gpio_set_function(_pin, GPIO_FUNC_PWM);
-    pwm_set_gpio_level(_pin, (0x8000 * _pwmScale) >> 16);
+    pwm_set_gpio_level(_pin, 2047);
     if (_stereo) {
         gpio_set_function(_pin + 1, GPIO_FUNC_PWM);
-        pwm_set_gpio_level(_pin + 1, (0x8000 * _pwmScale) >> 16);
+        pwm_set_gpio_level(_pin + 1, 2047);
     }
 
     return true;

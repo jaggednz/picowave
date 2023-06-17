@@ -43,6 +43,8 @@ unsigned int inverse_lfo = 0;
 int16_t modulation = 0;
 uint8_t modulation_step = 13;
 
+uint32_t bit_crush = 0xFFFFFFFF;
+
 uint8_t wta_sel = 0;
 uint8_t wtb_sel = 1;
 
@@ -167,10 +169,10 @@ void inline update_voice(voice_state *voice) {
   //voice->sub_phase_accum += voice->sub_phase_step;
   //subPhase = voice->sub_phase_accum >> (32-1); //1Bit SUB
   voice->output =  (//wavetable[phase]);
-     (wavetable[phase] * (2047-voice->adsr_value[1]))
+     ((wavetable[phase] * (2047-voice->adsr_value[1]))
      +
      (wavetable[phase+255] * (voice->adsr_value[1]-1))
-    ) >> 11;
+    ) >> 11) & bit_crush;
   //voice->output += subPhase * 127;
   voice->output = filter1pole_feed(&voice->filter, filter_cutoff, voice->output);
   voice->output = (voice->output * voice->adsr_value[0])>>11;
@@ -205,7 +207,27 @@ void channel4_cb() {
   update_channel(pwm_channel4, &voices[6], &voices[7]);
 }
 
-void load_wavetable_file(){
+Dir wavetable_dir;
+void load_next_wavetable_file(bool rewind = false){
+  if (rewind) {
+    wavetable_dir = LittleFS.openDir("/wavetables");
+    wavetable_dir.rewind();
+  }
+  if (wavetable_dir.next()) {
+
+  } else {
+    //Rewind to first file
+    wavetable_dir.rewind();
+    wavetable_dir.next();
+  }
+
+  screen_loading_wavetable(wavetable_dir.fileName());
+  Serial.print("Opening ");
+  Serial.println(wavetable_dir.fileName());
+  Serial.print("Size: ");
+  Serial.println(wavetable_dir.fileSize());
+  Serial.flush();
+
 
   uint8_t buff[64];
   uint8_t msb;
@@ -214,24 +236,8 @@ void load_wavetable_file(){
   uint32_t i = 0;
   int16_t tmp;
 
-  //Open the Default wavetable
-  //File f = LittleFS.open("/wavetables/PPG_BES.WAV","r");
-  //if (!f) {
-  //Serial.println("Default wavetable not found");
-  //Open first file in the wavetables directory
-  Dir d = LittleFS.openDir("/wavetables");
-  d.rewind();
+  File f = wavetable_dir.openFile("r");
 
-//FIXME only some wavetables open 
-  d.next();
-  d.next();
-  d.next();
-  //d.next();d.next();d.next();d.next();d.next();d.next();
-  Serial.print("Opening ");
-  Serial.println(d.fileName());
-  Serial.flush();
-  File f = d.openFile("r");
-  //}
   if (!f) {
     screen_file_error();
     Serial.println("Error opening wavetable");
@@ -244,7 +250,12 @@ void load_wavetable_file(){
   f.seek(0x2B);
   while (f.available() > 0) {
     j = f.read(buff,64);
+    Serial.flush();
+    if (j == 0) {
+      break;
+    }
     for (int k = 0; k < j; k++) {
+      Serial.flush();
       if (hold) {
         tmp = (int16_t)(msb<<8| buff[k]);
         //Don't over fill the wavetable array, that would be bad!
@@ -350,6 +361,19 @@ void handleCC(byte channel, byte control, byte value)
   if (control == 3) {
     filter_cutoff = value;
   }
+  if (control == 4) {
+    if (value>0) {
+      load_next_wavetable_file();
+      //TODO load default wavetable postitions
+      load_wavetable(wavetable,0, wta_sel);
+      load_wavetable(wavetable,1, wtb_sel);
+    }
+  }
+  if (control == 5) {
+    bit_crush = 0xFFFFFFFF << (value%32) ;
+    Serial.print("PC:");
+    Serial.println(bit_crush,BIN);
+  }
   if (control == 42) {
     adsr_eg *adsr = &patch->adsr[0];
     adsr->attack = 128 - value;
@@ -401,6 +425,7 @@ void midi_init() {
 }
 
 bool boot_complete = false;
+bool serial_ready = false;
 void setup() {
   #if defined(ARDUINO_ARCH_MBED) && defined(ARDUINO_ARCH_RP2040)
     // Manual begin() is required on core without built-in support for TinyUSB such as mbed rp2040
@@ -411,26 +436,40 @@ void setup() {
   midi_init();
   //Start Serial
   Serial.begin(115200);
-  //Start FS
+  serial_ready = true;
+ 
+  screen_init();
+  screen_welcome(); 
+
+  while( !TinyUSBDevice.mounted() ) delay(1);
+  boot_complete = true;
+}
+
+uint32_t last_screen_update = millis();
+uint32_t last_loop_time = 0;
+uint32_t cnt = 0;
+
+void loop() {   
+  //Serial.println("working...");
+  MIDI.read();
+
+  if (millis() - last_screen_update > 25) {
+    screen_update(screen_wavetable, lfo);
+    last_screen_update = millis();
+  }
+}
+
+void setup1(){
   LittleFSConfig cfg;
   cfg.setAutoFormat(false);
   LittleFS.setConfig(cfg);
   LittleFS.begin();
 
-  // Serial.println("ls /wavetables");
-  // Dir dir = LittleFS.openDir("/wavetables");
-  // // or Dir dir = LittleFS.openDir("/data");
-  // while (dir.next()) {
-  //     Serial.print(dir.fileName());
-  //     if(dir.fileSize()) {
-  //         File f = dir.openFile("r");
-  //         Serial.print(" - ");
-  //         Serial.println(f.size());
-  //     }
-  // }
+  while( !serial_ready ) delay(1);
+
   Serial.println("Loading default wavetable");
   Serial.flush();
-  load_wavetable_file();
+  load_next_wavetable_file(true);
   Serial.println("Loading complete");
   // Set up sine table for waveform generation
   for (int i = 0; i < 128; i++) {
@@ -464,17 +503,12 @@ void setup() {
       voice_state *voice = &voices[i];
       voice->id = i;
   }
-
-  // wait until device mounted
-  while( !TinyUSBDevice.mounted() ) delay(1);
-  boot_complete = true;
+  
+  //Wait for the other core to finish booting.
+  while( !boot_complete ) delay(1);
 }
 
-uint32_t last_loop_time = 0;
-uint32_t cnt = 0;
-void loop() {   
-  //Serial.println("working...");
-  MIDI.read();
+void loop1(){
   if (millis() - last_loop_time > 5) {
     last_loop_time = millis();
     for (int i = 0; i < VOICE_COUNT; i++) {
@@ -485,21 +519,6 @@ void loop() {
       }
     }
     last_loop_time = millis();
-  }
-}
-
-void setup1(){
-  screen_init();
-  screen_welcome(); 
-  //Wait for the other core to finish booting.
-  while( !boot_complete ) delay(1);
-}
-
-uint32_t last_screen_update = millis();
-void loop1(){
-  if (millis() - last_screen_update > 25) {
-    screen_update(screen_wavetable, lfo);
-    last_screen_update = millis();
   }
 }
 

@@ -12,6 +12,7 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R2, /* reset=*/ U8X8_PIN_NONE);
 #define SCREEN_MODE_WAVETABLE 2
 #define SCREEN_MODE_ADSR 3
 #define SCREEN_MODE_LFO 4
+#define SCREEN_MODE_LOAD 5
 
 #define SCREEN_MODE_FATAL 99
 
@@ -37,6 +38,23 @@ void screen_welcome(){
   screen_mode_keep = millis();
   u8g2.clearBuffer();					// clear the internal memory
   u8g2.drawStr(0,10,"PICOWAVE 2040");	// write something to the internal memory
+  u8g2.sendBuffer();					// transfer internal memory to the display   
+}
+
+void screen_loading_wavetable(String filename) {
+  if (screen_mode != SCREEN_MODE_IDLE) {
+    delay(screen_mode_keep);
+  }
+
+  uint8_t str_len = filename.length() + 1; 
+  char display_filename[str_len];
+  filename.toCharArray(display_filename, str_len);
+
+  screen_mode = SCREEN_MODE_LOAD;
+  screen_mode_keep = millis();
+  u8g2.clearBuffer();					// clear the internal memory
+  u8g2.drawStr(0,15,"LOADING");	// write something to the internal memory
+  u8g2.drawStr(0,30,display_filename);
   u8g2.sendBuffer();					// transfer internal memory to the display   
 }
 
